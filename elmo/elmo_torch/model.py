@@ -46,8 +46,10 @@ class CharacterEmbedding(nn.Module):
 class BiLM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, word_number, dropout):
         super(BiLM, self).__init__()
+        self.hidden_size = hidden_size
         self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, bidirectional=True)
-        self.out_fc = nn.Linear(2 * hidden_size, word_number)
+        self.fw_fc = nn.Linear(hidden_size, word_number)
+        self.bw_fc = nn.Linear(hidden_size, word_number)
         self.dropout = dropout
     
     def forward(self, x, hidden=None, train=False):
@@ -55,8 +57,11 @@ class BiLM(nn.Module):
         if train:
             out = self.dropout(out)
         out, (h_n, h_c) = self.lstm(out, hidden)
-        out = F.log_softmax(F.relu(self.out_fc(out)), dim=-1)
-        return out, (h_n, h_c)
+        out_fw = out[:, :, :self.hidden_size]
+        out_bw = out[:, :, self.hidden_size:]
+        out_fw = F.log_softmax(F.relu(self.fw_fc(out_fw)), dim=-1)
+        out_bw = F.log_softmax(F.relu(self.bw_fc(out_bw)), dim=-1)
+        return out_fw, out_bw, (h_n, h_c)
 
 
 class Elmo(object):
@@ -75,7 +80,7 @@ class Elmo(object):
         max_word_length = (((x > 0).sum(axis=-1)) > 0).sum(axis=1).max()
         x_w = x[:, :max_word_length, :]
         x_w = self.char_emb(torch.tensor(x_w), train=False)
-        _, (hn, hc) = self.bilm(torch.tensor(x_w), train=False)
+        _, _, (hn, hc) = self.bilm(torch.tensor(x_w), train=False)
         hns = []
         hcs = []
         for i in range(0, self.num_layers * 2, 2):
@@ -103,12 +108,12 @@ class Elmo(object):
         batch_x = x[:, :max_word_length, :]
         batch_y = y[:, :max_word_length]
         self.optimizer.zero_grad()
-        y_f = batch_y[:, 1:]
-        y_b = batch_y[:, :-1]
+        y_f = batch_y[:, 2:]
+        y_b = batch_y[:, :-2]
         x_w = self.char_emb(torch.tensor(batch_x), train=True)
-        y_hat, (_, _) = self.bilm(x_w, train=True)
-        y_hat_f = y_hat[:, :-1, :]
-        y_hat_b = y_hat[:, 1:, :]
+        y_hat_f, y_hat_b, (_, _) = self.bilm(x_w, train=True)
+        y_hat_f = y_hat_f[:, :-2]
+        y_hat_b = y_hat_b[:, :-2]
         loss_f = self.criterion(y_hat_f.transpose(1, -1), torch.tensor(y_f))
         loss_b = self.criterion(y_hat_b.transpose(1, -1), torch.tensor(y_b))
         loss = (loss_f + loss_b) / 2
